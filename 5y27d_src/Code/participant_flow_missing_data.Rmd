@@ -1,0 +1,796 @@
+---
+title: "Participant Flow and Missing Data"
+author: "Dan W Joyce"
+date: "10th October 2018"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Setup
+Before executing this notebook, check `./DerivedData` for:
+
+  * `survivalData_tabulated.csv`
+  
+The working directory should be `./Code`
+
+See also : `./Code/term-data-dictionary.html` for data dictionary and commonly used abbreviations. 
+
+
+```{r message = FALSE}
+rm( list = ls() )
+require(dplyr)
+require(knitr)
+require(kableExtra)
+require(reshape2)
+require(ggplot2)
+require( VIM )
+require(mice)
+require( stringr )
+options(knitr.kable.NA = '')
+data.path <- "../DerivedData/"
+tabSurv <- read.csv( paste0( data.path, "survivalData_tabulated.csv") )
+
+startTime <- Sys.time()
+
+```
+
+
+
+# Participant Flow
+
+This section produces the diagram shown in Figure 1 (Participant Flow) of the paper.
+
+```{r}
+# -- total participants retrieved / harvested from CATIE data
+  total.N      <- unique( tabSurv$ID )
+
+# -- those missing data which means could not prospectively evaluate for TRS (so status.TRS == NA )
+  missing.BL    <- tabSurv$ID[ which( is.na( tabSurv$status.TRS ) ) ]
+  missing.cases <- tabSurv[ which( is.na( tabSurv$status.TRS ) ), ]
+
+# -- keep a copy of the whole of tabSurv (before removing cases that could not be included)
+  tabSurv.bak <- tabSurv
+  
+# -- remove missing.BL cases from tabSurv so we can continue defining sub-groups
+  tabSurv <- tabSurv[ -which( tabSurv$ID %in% missing.BL ), ]
+
+# -- left to analyse
+  N.included   <- nrow( tabSurv )  # total participants that we can analyse
+  
+  # -- indices of patients who "trigger" the absolute thresholds at some point
+  AT.cases <- tabSurv[ which( !is.na( tabSurv$time.onset.TRS ) ), ]
+  # -- indices of patients who *never* trigger the absolute threshold
+  NeverAT.cases <- tabSurv[ which( is.na( tabSurv$time.onset.TRS ) ), ]
+
+
+# -- of those who trigger (AT.cases), those that went on to develop TRS by full criteria
+  TRS.cases     <- AT.cases[ which( AT.cases$status.TRS == 2), ] 
+  
+  # -- those in the AT group, but who were shown to be Not-TRS (for one of many reasons - see below)
+  NTR.cases     <- AT.cases[ which( AT.cases$status.TRS == 1), ] 
+  
+  
+  # -- Of those NTR cases, break down by :
+  #    a) those who were still symptomatic, but didn't have >= 2 adequate trials
+  #        - this group will be people "on the way" to TRS if they complete a second adequate Rx and show no response
+  
+  # -- those in the AT group, who remained symptomatic, but only had 1 adequate Rx
+  # -- so are effectively right censored by exiting trial
+  oneRx.cases <- AT.cases[ which( 
+                                        !is.na( AT.cases$time.onset.TRS ) &  
+                                        AT.cases$numAdeq == 1 &              # had one adeq Rx
+                                        AT.cases$status.sof == 1 &           # but SOF was above threshold
+                                        AT.cases$status.sx == 1              # and symptoms persisted at TRS threshold
+                                      ),
+                               ]
+  
+  # -- those in the AT group, who remained symptomatic, but only had ZERO adequate Rx
+  # -- so are effectively right censored by exiting trial
+  zeroRx.cases <- AT.cases[ which( 
+                                        !is.na( AT.cases$time.onset.TRS ) &  
+                                        AT.cases$numAdeq == 0 &              # had one adeq Rx
+                                        AT.cases$status.sof == 1 &           # but SOF was above threshold
+                                        AT.cases$status.sx == 1              # and symptoms persisted at TRS threshold
+                                      ),
+                               ]
+
+```
+
+
+
+```{r}
+
+library(DiagrammeR)
+
+
+# Create a node data frame
+nodes <-
+  create_node_df(n = 10,
+               label = c( paste("Retrieved =", length( total.N ) ),                         #1
+                          paste("Excluded \nfor Missing\nData =", length(missing.BL) ),                    #2
+                          paste("Included =", N.included ),                                #3
+                          paste("NAT\nNever Above \nThreshold =", nrow( NeverAT.cases ) ),  #4
+                          paste("AT\nAbove\nThreshold =", nrow( AT.cases )  ),              #5
+                          paste("Not TRS =\n", nrow( NTR.cases )  ),                        #6
+                          
+                          paste("Develop \n TRS =", nrow( TRS.cases )  ),                   #7
+                          
+                          paste("Responded \n =", 
+                                nrow( NTR.cases ) - ( nrow( oneRx.cases ) + 
+                                                        nrow( zeroRx.cases)  )),            #8
+                          paste("Symptomatic \n Only 1 \nAdeq Rx =", 
+                                nrow( oneRx.cases )  ),                                     #9
+                          paste("Symptomatic \n But 0 \nAdeq Rx =", 
+                                nrow( zeroRx.cases )  )                                     #10
+                        ),
+               type = "lower",
+               style = "filled",
+               fontsize = "8",
+               fixedsize = FALSE,
+               fontcolor = c("black"),
+               #fillcolor = c(rep("white",5),"PaleGreen","LightCoral","OrangeRed"),
+               fillcolor = c(rep("white",3),"#a1d99b","#ffeda0","#ffeda0","#fb6a4a","#a1d99b","#fee6ce","#fdae6b"),
+               shape = c("rectangle"))
+
+
+
+
+
+edges <-
+  create_edge_df(from = c(1, 1, 3, 3, 5, 5, 6, 6, 6),
+                 to   = c(2, 3, 4, 5, 6, 7, 8, 9, 10),
+                 rel = "leading_to")
+
+
+
+graph <-
+  create_graph(
+    nodes_df = nodes,
+    edges_df = edges)
+
+render_graph(graph, layout = "tree")
+```
+
+This graph describes:
+
+  * **Excluded (for Missing Data)** -- the number of participants who did not have data to evaluate TRS status (this could be for a number of reasons, e.g. missing SOF, Rx or Sx data in a combination that means they cannot be assigned to the NAT or AT groups); imputation of this multiple-time point data is not plausible, and we have to tolerate loss.
+  * **Included** -- the number of participants with enough data to evaluate treatment resistance or responder status
+  * **Never Above Threshold (NAT)** -- the group of participants who completed the trial, never meeting the TRRIP absolute criteria on symptoms / SOF.  For this group, the adequate number of adequate trials is irrelevant.
+  * **Above Threshold (AT)** -- the group of participants who completed the trial, and at *some point* met the absolute symptom and SOF criteria.  For this group, each participant is then followed-up and monitored for a) adequate trials, b) continuing to meet absolute criteria and c) symptom persistance/response (i.e. less than 20% change)
+  * **Develop TRS** -- the sub-population of the AT group who met **all** criteria on the TRRIP consensus, and can be labelled treatment resistant.
+  * **Not TRS** -- the sub-population of the AT group who **did not** meet all the TRRIP criteria.  In the "Not TRS" group:
+  
+    * the **Responded** group are those who (despite being in the AT group) went on to respond on symptoms and SOF.
+    * the **Symptomatic Only 1 Adeq Rx** group are **right censored** and these participants meet the critiera for the full "Develop TRS" group, but had only **one** adequate trial.
+    * the **Symptomatic But 0 Adeq Rx** group are also **right censored** and these participants meet the criteria for the full "Develop TRS" group, but had **no** adequate trials
+
+
+# TRRIP Criteria Coverage
+
+This section produces the diagram for Figure 2 (see also: Supplementary Information Figure S2).  Note that the diagram required composition and editing because of the limitations of displaying all the relevant figures on each section/intersection of the venn diagram.  
+
+The individual diagrams are written to (best viewed from) `./DerivedData`
+
+```{r}
+require(venneuler)
+
+# -- all IDs included in analyses (N = 1334)
+included.IDs <- tabSurv$ID 
+N.total <- nrow( tabSurv )
+
+# -- to do this, we'll need to manually inspect the raw trajectory data
+attach( paste0( data.path, "raw_trajectories.RData" ) )
+
+# -- number of people who at some point hit the SOF threshold and are in the included set of participants
+  temp.SOFAS <- TRS.sofas.traj[ which(  TRS.sofas.traj$ID %in% included.IDs & TRS.sofas.traj$TRS.sofas.traj == 1 ), ]
+  ids.SOF    <- unique( temp.SOFAS$src_subject_id )
+  count.SOF <- length( ids.SOF )
+
+  tab.SOF <- data.frame( Group = c("Moderate \n Or Above","Below \nModerate"),
+                         Freq  = c( count.SOF, N.total - count.SOF ))
+  
+  # -- highlight moderate or above trials bar
+  bar.colors <- c("0" = "#8da0cb", "1" = "#fc8d62")
+  tab.SOF$colCode <- c(1,0) 
+  
+  ggplot(tab.SOF, aes(x = Group, y = Freq, label = Freq, fill = factor(colCode) ) ) +
+    geom_bar(stat = "identity") +
+    geom_text(size = 10, vjust = -0.6 ) +
+    scale_fill_manual(values=bar.colors) +
+    xlab("\nSocial And \n Occupational Impairment" ) +
+    ylab("") +
+    ylim(0, 1700) +
+    theme_classic(base_size = 30) +
+    theme( legend.position = "none") +
+    theme(axis.line=element_blank(), 
+            #axis.text.x=element_blank(),
+            axis.text.x = element_text(face="bold", colour = "black", size=20 ),
+            axis.text.y=element_blank(),
+            axis.ticks=element_blank(),
+            #axis.title.x=element_blank(),
+            #axis.title.y=element_blank(),
+            panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+            panel.grid.minor=element_blank(),plot.background=element_blank())
+  
+  ggsave( paste0( data.path, "bar_SOF.png" ), bg = "transparent" )
+  
+  
+# -- breakdown of adequate trials / number >= 2 adequate trials
+  temp.Rx <- TRS.rx.traj[ which( TRS.rx.traj$ID %in% included.IDs ), ]
+  tab.adeqRx <- data.frame( AdeqRx = seq(0, max( temp.Rx$cumAdeqRx ) ),
+                            Freq = rep(0, max( temp.Rx$cumAdeqRx ) + 1 ) )
+  unique.ids <- unique( temp.Rx$ID )
+  
+  ids.2Rx <- c()
+  
+  for( i in 1:length( unique.ids ) ) {
+    this.adeq.rx <- max( temp.Rx$cumAdeqRx[ which( temp.Rx$ID == unique.ids[i] ) ] )
+    tab.adeqRx$Freq[ which( tab.adeqRx$AdeqRx == this.adeq.rx ) ] <- tab.adeqRx$Freq[ which( tab.adeqRx$AdeqRx == this.adeq.rx ) ] + 1
+    if( this.adeq.rx >= 2 ) {
+      ids.2Rx <- c( ids.2Rx, unique.ids[i] )
+    }
+  }
+  
+  count.Rx <- length( ids.2Rx )
+
+# -- highlight 2 adequate trials bar
+  bar.colors <- c("0" = "#8da0cb", "1" = "#fc8d62")
+  tab.adeqRx$colCode <- c(0,0,1,1) 
+  
+  ggplot(tab.adeqRx, aes(x = AdeqRx, y = Freq, label = Freq, fill = factor(colCode))) +
+    geom_bar(stat = "identity") +
+    geom_text(size = 10, vjust = -0.6 ) +
+    scale_fill_manual(values=bar.colors) +
+    xlab("\nNumber of Adequate Trials" ) +
+    ylab("") +
+    ylim(0, 800) +
+    theme_classic(base_size = 30) +
+    theme( legend.position = "none") +
+    theme(axis.line=element_blank(), 
+            #axis.text.x=element_blank(),
+            axis.text.x = element_text(face="bold", colour = "black", size=20 ),
+            axis.text.y=element_blank(),
+            axis.ticks=element_blank(),
+            #axis.title.x=element_blank(),
+            #axis.title.y=element_blank(),
+            panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+            panel.grid.minor=element_blank(),plot.background=element_blank())
+  
+  ggsave( paste0( data.path, "bar_AdeqRx.png" ), bg = "transparent" )
+
+
+# -- Absolute Sx thresholds
+  # -- breakdown of Sx criteria : at least moderate severity across domains, *ever* in trial (not response)
+  temp.Sx <- TRS.sx.traj[ which( TRS.sx.traj$ID %in% included.IDs ), ]
+  tab.Sx  <- data.frame( Domain = c("P", "N", "G"),
+                         Freq = rep(0, 3) )
+  unique.ids <- unique( temp.Sx$ID )
+  
+  ids.Sx <- c()
+  
+  for( i in 1:length( unique.ids ) ) {
+    this.sx <- ifelse( colSums( temp.Sx[ temp.Sx$ID == unique.ids[i] , c("TRS.pos", "TRS.neg", "TRS.gen") ] ) > 0, 1, 0 )
+    
+    # -- increment frequency counts
+    tab.Sx$Freq <- as.numeric( tab.Sx$Freq + this.sx )
+    
+    if( any( this.sx > 0 ) ) {
+      ids.Sx <- c( ids.Sx, unique.ids[i] )
+    }
+  }
+  
+  # # -- compute proportions from included population (N = 1334) who at some point met P, N or G criteria
+  # tab.Sx$Freq <- tab.Sx$Freq / nrow( tabSurv )
+
+  count.Sx <- length( ids.Sx )
+  
+  tab.Sx$Domain <- factor( tab.Sx$Domain, levels = c("P","N","G"), labels = c("P","N","G") )
+  ggplot(tab.Sx, aes(x = Domain, y = Freq, label = Freq) ) +
+    geom_bar(stat = "identity", fill = "#8da0cb") +
+    geom_text(size = 10, vjust = -0.6 ) +
+    xlab("\nPANSS Domain" ) +
+    ylab("") +
+    ylim(0, 1400) +
+    theme_classic(base_size = 30) +
+    theme( legend.position = "none") +
+    theme(axis.line=element_blank(), 
+            axis.text.x = element_text(face="bold", colour = "black", size=20 ),
+            axis.text.y=element_blank(),
+            axis.ticks=element_blank(),
+            panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+            panel.grid.minor=element_blank(),plot.background=element_blank())
+  
+  ggsave( paste0( data.path, "bar_Sx.png" ), bg = "transparent" )
+  
+  
+
+vd <- c( SOF = count.SOF / N.total,
+         Sx  = count.Sx / N.total, 
+         Rx  = count.Rx / N.total,
+         "SOF&Sx" = length(intersect(ids.SOF, ids.Sx) ) / N.total,
+         "SOF&Rx" = length(intersect(ids.SOF, ids.2Rx) ) / N.total,
+         "Sx&Rx"  = length(intersect(ids.Sx, ids.2Rx) ) / N.total,
+         "SOF&Sx&Rx" = length( intersect( ids.SOF, intersect(ids.Sx, ids.2Rx) ) ) / N.total
+         ) 
+      
+
+vdd <- venneuler(vd)
+png(paste0(data.path,"venn_labels.png"))
+  plot( vdd )
+dev.off()
+
+
+
+```
+
+# Missing Data : Excluded Participants
+For the `r nrow(missing.cases)` the relevant missing information was:
+
+```{r}
+colSums( missing.cases[ ,c("missing.Sx","missing.Rx","missing.SOF") ] )
+```
+
+# Missing Data Imputation
+This code relates to the **Results** section of the paper, specifically Table 2, were we ask if the `r length(missing.BL)` excluded participants differ from the `r nrow(tabSurv)` participants who could be included.  
+We used the same demographic and baseline data previously reported in the original CATIE trial paper:
+
+> Lieberman, J. A., Stroup, T. S., McEvoy, J. P., Swartz, M. S., Rosenheck, R. A., Perkins, D. O., … Hsiao, J. K. (2005). Effectiveness of Antipsychotic Drugs in Patients with Chronic Schizophrenia. New England Journal of Medicine, 353(12), 1209–1223. http://doi.org/10.1056/NEJMoa051688
+
+However, some of the total `r length( missing.BL ) + nrow( tabSurv )` participants are missing baseline and demographic data.  We first begin by looking at the pattern of missing baseline data (reported as the footnote to Table 2), then proceed to imputation to enable analysis of differences between excluded and included participants.
+
+## Patterns of Missing Demographic Data
+
+```{r}
+# subset the complete data set (tabSurv) so we are testing only relevant variables
+# -- this means we exclude all derived TRS related variables, and include only those reported in 
+# -- Lieberman et al (2005)
+excludeCols <- c("ID", "time.inTrial", "onset.Sx", "onset.SOF", "onset.Rx", "time.onset.TRS", 
+                 "time.TRS", "numAdeq", "durAdeq", "totalRx", "status.rx", "status.sx", "status.sof",
+                 "status.TRS", "TRS.pos", "TRS.neg", "missing.Sx", "missing.Rx", "missing.SOF",
+                 "time.inTrialYrs", "time.onset.TRSYrs","time.TRSYrs" )
+
+
+miss.plot <- aggr(tabSurv.bak[ , -which( names( tabSurv.bak ) %in% excludeCols ) ], col=c('navyblue','red'), 
+                  numbers=TRUE, 
+                  sortVars=TRUE, 
+                  labels=names(data), 
+                  cex.axis=.7, gap=3, 
+                  ylab=c("Histogram of missing data","Pattern")
+             )
+```
+
+This analysis shows that missing data is confined to: 
+
+  * `yrsFirstTx` (integer)
+  * `yrsFirstAntiPsyRx` (integer)
+  * `employFT` (binary)
+  * `CGIsev` (integer)
+  * `yrsEduc` (integer)
+  * positive `P`, negative `N` and general `G` (all integer) PANSS 
+  
+Although in very small numbers : 
+
+```{r}
+kable( miss.plot$missings[ which( miss.plot$missings$Count > 0), ], "html" ) %>%
+    kable_styling("striped", full_width = F) 
+
+totalData <- dim( tabSurv.bak[ , -which( names( tabSurv.bak ) %in% excludeCols ) ] )
+missPerc <- 100 * sum( miss.plot$missings$Count ) / ( totalData[1] * totalData[2] )
+
+  # -- latex table
+  ltxTable <- miss.plot$missings[ which( miss.plot$missings$Count > 0), ]
+  rownames( ltxTable ) <- c()
+  ltxTable$percMiss <- round( 100 * ( ltxTable$Count / totalData[1] ), 2 )
+  colnames( ltxTable ) <- c("Variable", "Number", "Percentage")
+  ltxTable$Variable <- c("PANSS, P", "PANSS, N", "PANSS, G",
+                         "Years Education", "CGI (severity)",
+                         "Employed","Years First Treated (Emotional/Behavioural Problem)",
+                         "Years First Treated (Antipsychotic)")
+  kable( ltxTable , "latex", booktabs = TRUE ) %>%
+      kable_styling(font_size = 8) %>%
+      add_header_above(c(" " = 1, "Missing Data" = 2))
+      
+  
+  
+
+```
+
+In total, we have `r round( missPerc, 3 )`% missing data. 
+
+We will attempt multiple imputation with chained equations for the missing variables.  Experiments revealed that for integer variables, predictive mean matching worked better than regression-based methods.  Exceptions were `yrsFirstTx` and `yrsFrstAntiPsyRx` where random sampling from non-missing data provided more consistent imputations.  For `employFT` (binary) logistic regression performed well.
+
+```{r}
+tabSurv$missingFlag <- 0
+missing.cases$missingFlag <- 1
+
+to.impute.tab <- rbind( tabSurv,  missing.cases )
+to.impute.tab$employFT <- factor( tabSurv.bak$employFT )
+
+# -- Add in some variables we DO NOT want imputed, but need to be carried in the imputed sets 
+#    for analysis later, including times to events
+
+  # 1) -- final "yes"/"no" flag for TRS case ( == 1, or 0 == not)
+  to.impute.tab$final.TRS <- ifelse( to.impute.tab$status.TRS == 2, 1, 0 )
+  
+  # 2) -- time to TRS (for a right censored model : If final.TRS == 1, event occurs at time.TRSYrs, else time.inTrialYrs)
+  #       This will be the event time in a standard cox regression
+  to.impute.tab$eventTime.TRS <- to.impute.tab$time.inTrialYrs * ifelse( to.impute.tab$final.TRS == 0, 1, 0 ) +   ## capture NON TRS times
+                to.impute.tab$final.TRS * ifelse( is.na( to.impute.tab$time.TRSYrs ), 0, to.impute.tab$time.TRSYrs ) ## capture TRS cases
+
+
+  # 3) -- Add a flag to denote participant is in the AT group
+  to.impute.tab$group.AT <- ifelse( to.impute.tab$ID %in%  AT.cases$ID, 1, 0 )
+
+excludeCols <- c("ID", "time.inTrial", "onset.Sx", "onset.SOF", "onset.Rx", "time.onset.TRS",
+                 "time.TRS", "numAdeq", "durAdeq", "totalRx", "status.rx", "status.sx", "status.sof",
+                 "status.TRS", "TRS.pos", "TRS.neg", "missing.Sx", "missing.Rx", "missing.SOF",
+                 "time.inTrialYrs", "time.onset.TRSYrs","time.TRSYrs", "missingFlag", "final.TRS",
+                 "eventTime.TRS", "group.AT")
+
+# -- first, get a predictor matrix so we can remove variables from being used as predictors for imputation
+init.mice <- mice( to.impute.tab, maxit = 0, print = FALSE )
+preds <- init.mice$predictorMatrix
+meths <- init.mice$method
+# -- ensure we remove excludeCols
+preds[ , excludeCols ] <- 0
+preds[ excludeCols,  ] <- 0
+# -- from testing, we know that the following imputation methods work better
+meths[excludeCols] <- ""
+meths["yrsFirstTx"] <- "sample"
+meths["yrsFrstAntiPsyRx"] <- "sample"
+
+imputedSets <- 20
+MID <- mice( to.impute.tab, m = imputedSets, predictorMatrix = preds, method = meths, print = FALSE )
+
+```
+
+Inspecting the mixing of the MCMC chains:
+
+```{r}
+plot( MID )
+```
+
+Shows no strong trend and good mixing of the chains. 
+
+The distribution of present data against imputed values shows they are within plausible ranges: 
+```{r}
+# - visualise imputed values
+stripplot(MID, 
+          data = P + N + G + yrsEduc + CGIsev + employFT + yrsFirstTx + yrsFrstAntiPsyRx~ .imp, 
+          pch = 20, cex = 1.2)
+```
+
+# Sensitivity on Excluded/Included Participants
+
+For Table 2, we first run multiple univariate tests on each baseline/demographic variable to describe difference between included/excluded participants.  This process is repeated for each of the imputed data sets as a sensitivity analysis.  
+
+
+```{r}
+
+# -- A function to compute differences in baseline / demographics between the missing (for TRS) and present groups
+#    This is built into a function because it's re-run for each imputed set (e.g. a sensitivity analysis).
+
+diffBaseline <- function( descTab ) {
+
+    # -- build a vector describing eaach column in descTab as either nominal, binary or numeric data
+    dataType <- as.numeric( unlist( lapply(descTab, function(x) if (!is.numeric(x)) NA else max(x, na.rm = TRUE))) )
+    
+    # remove missingFlag column
+    dataType <- dataType[ 1:(length( dataType ) - 1 ) ]
+    
+    # parse dataType and decide on a relevant univariate test - e.g. Chi square for categorical proportions and t or KS for continuous
+    testFlag <- rep(NA, length( dataType ) )
+    
+    for( i in 1:length( dataType ) ) {
+      if( dataType[i] == 1 | is.na( dataType[i] ) ) {
+        # categorical (factor) or binary : proportion test - Chi-square : code = 1
+        testFlag[i] <- 1
+      } else {
+        if( dataType[i] > 1 ) {
+          # continuous, therefore KS and t-test
+          testFlag[i] <- 2
+        }
+      }
+    }
+    
+    # -- testFlag[i] == 1 instructs us to Chi-square for proportions (binary, categorical) or 
+    #    testFlag[i] == 2 instructs us to use either KS / t-test (depending on normality) for numerical / scale data
+    
+    testTable <- data.frame( Var = rep("", length( dataType ) ),
+                             M.Missing          = rep(NA, length( dataType ) ),
+                             Spread.Missing     = rep(NA, length( dataType ) ),
+                             M.Present          = rep(NA, length( dataType ) ),
+                             Spread.Present     = rep(NA, length( dataType ) ),
+                             Perc.Missing       = rep(NA, length( dataType ) ),
+                              N.one.missing          = rep(NA, length( dataType ) ),
+                             Perc.Present       = rep(NA, length( dataType ) ),
+                              N.one.present          = rep(NA, length( dataType ) ),
+                             P.Value            = rep(NA, length( dataType ) ),
+                             Test.Used          = rep("", length( dataType ) ),
+                             stringsAsFactors = FALSE
+    )
+    
+    # Populate testTable, for all variables in testFlag ...
+    for( i in 1:length( testFlag ) ) {
+      thisVar <- names( descTab )[i]
+      testTable$Var[i] <- thisVar
+      
+      # Select out data for missing overall group and non-missing group
+      grpMissing    <- descTab[ which( descTab$missingFlag == 1 ), i ]
+      grpNotMissing <- descTab[ which( descTab$missingFlag == 0 ), i ]
+      
+      # if for thisVar, testFlag == 1, it's ordinal / categorical data
+      if( testFlag[i] == 1 ) {
+        test.tab <- rbind( table( grpNotMissing ), table( grpMissing ) )
+        rownames(test.tab) <- c("Present","Missing")
+        
+        suppressWarnings(
+          xs <- chisq.test( test.tab )
+        )
+        
+        # -- absolute numbers with level = 1 for this variable in PRESENT (included) group
+        testTable$N.one.present[i]    <- length( which( grpNotMissing == 1 ) )
+        testTable$N.one.missing[i]    <- length( which( grpMissing == 1 ) )
+        
+        testTable$Perc.Present[i]  <- round( length( which( grpNotMissing == 1 ) ) / length( grpNotMissing ) * 100, 1 )     ## proportion of 1's to 0s in subjects with present data 
+      
+        testTable$Perc.Missing[i]  <- round( length( which( grpMissing == 1 ) ) / length( grpMissing ) * 100, 1 )   
+        ## proportion of 1's to 0s in subjects with Missing data 
+        testTable$P.Value[i]       <- round( xs$p.value, 3 )
+        testTable$Test.Used[i]     <- "ChiSq"
+        
+      } else {
+        # thisVar is continuous, testFlag == 0
+        # We need either KS and t-test 
+        
+        # test normality with Shapiro-Wilks
+        this.SW.test.missing    <- shapiro.test( grpMissing )
+        this.SW.test.notmissing <- shapiro.test( grpNotMissing )
+        
+        if( this.SW.test.missing$p.value < 0.05 | this.SW.test.notmissing$p.value < 0.05 ) {
+          # if p.value of either SW test < 0.05, then use KS (i.e. at least one distribution is non-normal)        
+          suppressWarnings(
+            this.test <- ks.test( grpMissing, grpNotMissing, alternative = "two.sided" )      
+          )
+        } else {
+          # both missing and non-missing data are normal enough
+          suppressWarnings(
+            this.test  <- t.test( grpMissing, grpNotMissing, alternative = "two.sided" )
+          )
+        }
+        
+        if( this.test$method == "Two-sample Kolmogorov-Smirnov test" ) {
+          # record median and IQR
+          testTable$M.Missing[i]      <- median( grpMissing, na.rm = TRUE )
+          testTable$Spread.Missing[i] <- IQR( grpMissing, na.rm = TRUE )
+          testTable$M.Present[i]      <- median( grpNotMissing, na.rm = TRUE )
+          testTable$Spread.Present[i] <- IQR( grpNotMissing, na.rm = TRUE )
+          testTable$P.Value[i]        <- round( this.test$p.value, 3 )
+          testTable$Test.Used[i]      <- "KS"
+        }
+        
+        if( this.test$method == "Welch Two Sample t-test" ) {
+          # record median and IQR
+          testTable$M.Missing[i]      <- mean( grpMissing, na.rm = TRUE )
+          testTable$Spread.Missing[i] <- sd( grpMissing, na.rm = TRUE )
+          testTable$M.Present[i]      <- mean( grpNotMissing, na.rm = TRUE )
+          testTable$Spread.Present[i] <- sd( grpNotMissing, na.rm = TRUE )
+          testTable$P.Value[i]        <- round( this.test$p.value, 3 )
+          testTable$Test.Used[i]      <- "T"
+          
+        }
+        
+      }
+    }
+    
+    # add a significance flag (purely cosmetic)
+    testTable$signif <- ifelse( testTable$P.Value < 0.05, "*", " " )
+
+    return( testTable )
+}
+
+# -- a list of statistically significant differences between : missing data for TRS and present
+#    We check each imputed set as a sensitivity analysis to find the largest set of 
+#    differences.
+listSigVars <- vector("list", imputedSets)
+
+# -- variables we DO NOT want tested 
+dontAnalyse <- c("ID", "time.inTrial", "onset.Sx", "onset.SOF", "onset.Rx", "time.onset.TRS",
+                 "time.TRS", "numAdeq", "durAdeq", "totalRx", "status.rx", "status.sx", "status.sof",
+                 "status.TRS", "TRS.pos", "TRS.neg", "missing.Sx", "missing.Rx", "missing.SOF",
+                 "time.inTrialYrs", "time.onset.TRSYrs","time.TRSYrs", "final.TRS", "eventTime.TRS", "group.AT" )
+
+for( i in 1:imputedSets ) {
+  # -- for each imputed set, establish differences in baseline data for missing for TRS / present for TRS groups (see tree diagram above)
+  thisSet <- complete( MID, i )
+  diffTab <- diffBaseline( thisSet[ , -which( names( thisSet ) %in% dontAnalyse ) ] )
+  # -- keep the significant variables
+  listSigVars[[i]] <- diffTab$Var[ which( diffTab$P.Value < 0.05 ) ]
+}
+
+```
+
+If imputation makes **no difference** to the baseline/demographic variables that are different between included/excluded participants, then the variables that are significantly different (between included/excluded participants) should be consistent across all `r imputedSets` imputed sets.  We can check this by tabulating the number of times significantly-different variables occur over the imputed sets; complete consistency would be each significantly-different variable occuring `r imputedSets` times:    
+
+```{r}
+kable( table( unlist( listSigVars ) ) )
+```
+
+This tells us that across imputations, the same baseline variables differ (in the included versus excluded participants) across imputated sets -- i.e. the baseline differences between included/excluded groups are not sensitive to the small proportion of missing data.    
+
+# Excluded/Included Participants (Table 2)
+Finally, we display the multiple univariate differences for the **source data** (which has missing values for some demographic variables) confident that multiple imputation makes little difference to the significant differences in baseline variables. 
+
+With some annotation, the table of multiple univariate differences is as follows:
+
+```{r}
+
+# -- to.impute.tab is the complete data set with missing data, used as the basis
+#    for imputation.
+testTable <- diffBaseline( to.impute.tab[ , -which( names( to.impute.tab ) %in% dontAnalyse ) ] )
+
+insertRow <- function(existingDF, newrow, r) {
+  existingDF <- rbind(existingDF,newrow)
+  existingDF <- existingDF[order(c(1:(nrow(existingDF)-1),r-0.5)),]
+  row.names(existingDF) <- 1:nrow(existingDF)
+  return(existingDF)  
+}
+
+# organise and select vars in grouping/order from Lieberman et al (2005) paper (Table 1)
+rowOrder <- c(4,5,20,7,21,9,6,1,2,3,8,10,11,31:37,12:19,23,25,26,24,27:30)
+testTable.display <- testTable[ rowOrder, ]
+
+# -- tidy labels
+  testTable.display$Var[1] <- "  Age"
+  testTable.display$Var[2] <- "  Sex (Male)"
+  testTable.display$Var[3] <- "  Race"
+  testTable.display$Var[4] <- "  Education (Yrs)"
+  testTable.display$Var[5] <- "  Marital Status"
+  testTable.display$Var[6] <- "  Employment (FT)"
+  testTable.display$Var[7] <- "  Exacerbation (past 3 months)"
+  testTable.display$Var[8] <- "  Positive"
+  testTable.display$Var[9] <- "  Negative"
+  testTable.display$Var[10]<- "  General"
+  testTable.display$Var[11]<- "  CGI Severity"
+  testTable.display$Var[12]<- "  For Behaviour/Emotional Problem"
+  testTable.display$Var[13]<- "  With Antipsychotic Medication"
+  testTable.display$Var[14]<- "  Depression"
+  testTable.display$Var[15]<- "  Alcohol Dependency"
+  testTable.display$Var[16]<- "  Alcohol Abuse"
+  testTable.display$Var[17]<- "  Drug Dependency"
+  testTable.display$Var[18]<- "  Drug Abuse"
+  testTable.display$Var[19]<- "  OCD"
+  testTable.display$Var[20]<- "  Anxiety"
+  testTable.display$Var[21]<- "  Olanzapine"
+  testTable.display$Var[22]<- "  Quetiapine"
+  testTable.display$Var[23]<- "  Risperidone"
+  testTable.display$Var[24]<- "  Ziprasidone"
+  testTable.display$Var[25]<- "  Haloperidol"
+  testTable.display$Var[26]<- "  Decanoate"
+  testTable.display$Var[27]<- "  Perphenazine"
+  testTable.display$Var[28]<- "  Other Rx"
+  testTable.display$Var[29]<- "  Diabetes"
+  testTable.display$Var[30]<- "  Hyperlipidaemia"
+  testTable.display$Var[31]<- "  Hypertension"
+  testTable.display$Var[32]<- "  Hepatitis (ABC)"
+  testTable.display$Var[33]<- "  Isch. Heart Disease"
+  testTable.display$Var[34]<- "  Osteoarthritis"
+  testTable.display$Var[35]<- "  Osteoporosis"
+  testTable.display$Var[36]<- "  STI"
+  
+# insert group labels
+  testTable.display <- insertRow( testTable.display, c("Demographics",rep(NA,9)), 1)
+  testTable.display <- insertRow( testTable.display, c("PANSS",rep(NA,9)), 9)
+  testTable.display <- insertRow( testTable.display, c("Psychiatric History",rep(NA,9)), 14)
+  testTable.display <- insertRow( testTable.display, c("Years Since First Treatment",rep(NA,9)), 15)
+  testTable.display <- insertRow( testTable.display, c("SCID diagnosis (past 5 years)",rep(NA,9)), 18)
+  testTable.display <- insertRow( testTable.display, c("Baseline Antipsychotic Medication",rep(NA,9)), 26)
+  testTable.display <- insertRow( testTable.display, c("Baseline Medical Diagnoses",rep(NA,9)), 35)
+
+  names( testTable.display ) <- c(
+    "Variable",
+    "Median",
+    "IQR",
+    "Median",
+    "IQR",
+    "Percentage1",
+    "N1",
+    "Percentage2",
+    "N2",
+    "P-value",
+    "Test",
+    "P < 0.05"
+  )
+  
+  kable(testTable.display, "html") %>%
+    kable_styling("striped", full_width = F) %>%
+    row_spec(c(1,9,14,15,18,26,35), bold = T, color = "black", background = "#bdbdbd") %>%
+    add_header_above(c(" " = 1, "Excluded (Missing Data)" = 2, "Included" = 2,
+                       "Excluded (Missing Data)" = 2, "Included" = 2, " " = 3))
+  
+  # -- latex version : 
+    ltxTbl <- testTable.display[ , -which( colnames( testTable.display ) %in% 
+                                             c("Test", "P < 0.05", "P-value","Percentage1", "N1",
+                                               "Percentage2","N2") 
+                                          ) 
+                                ]
+    
+    # -- merge "Percentage" and "N" columns for display
+    temp.NP.Exc <- paste0( testTable.display[,"Percentage1"], " (", testTable.display[,"N1"], ")")
+    temp.NP.Inc <- paste0( testTable.display[,"Percentage2"], " (", testTable.display[,"N2"], ")")
+    
+    temp.NP.Exc[ which( ( str_match( temp.NP.Exc, "NA") == "NA" ) ) ] <- ""
+    temp.NP.Inc[ which( ( str_match( temp.NP.Inc, "NA") == "NA" ) ) ] <- ""
+    
+    # -- merge P val and * flag
+    temp.p <- paste( testTable.display[,"P-value"], testTable.display[,"P < 0.05"])
+    # -- replace  NAs with blank strings
+    temp.p[ which( ( str_match( temp.p, "NA") == "NA" ) ) ] <- ""
+    
+    ltxTbl$Percent.Exc <- temp.NP.Exc
+    ltxTbl$Percent.Inc <- temp.NP.Inc
+    ltxTbl$P.value <- temp.p
+
+    colnames(ltxTbl) <- c("Variable","Median","IQR","Median","IQR","Percent (N)","Percent (N)","P Value")
+    
+    # -- because race and martial are multi-level (not binary) we need to blank the 
+    # -- percentages and report separately
+    ltxTbl[ which( ltxTbl$Variable %in% c("  Marital Status")  ) , 6:7 ] <- NA
+    ltxTbl[ which( ltxTbl$Variable %in% c("  Race")  ) , 6:7 ] <- NA
+    
+    kable(ltxTbl, "latex", booktabs = TRUE) %>%
+      kable_styling(font_size = 6) %>%
+      row_spec(c(1,9,14,15,18,26,35), bold = T, color = "black", background = "#bdbdbd") %>%
+      add_header_above(c(" " = 1, "Excluded" = 2, "Included" = 2,
+                       "Excluded" = 1, "Included" = 1, " " = 1))
+    
+
+  
+```
+
+## Race
+Race appears to differ (for those excluded for missing data compared to the group included in analyses) and as race is nominal with `r length( levels( to.impute.tab$race ) )` levels, we need more detail than provided in the preceding table.
+```{r}
+levels( to.impute.tab$race )
+```
+
+```{r}
+
+# -- explore proportion of missing cases by racial group
+raceProp <- xtabs(  ~ to.impute.tab$race + to.impute.tab$missingFlag  )
+colnames( raceProp ) <- c("Included","Excluded")
+raceProp <- raceProp[,c(2,1)]
+
+  kable(raceProp, "html") %>%
+    kable_styling("striped", full_width = F)
+  
+  kable(raceProp, "latex", booktabs = TRUE) %>%
+    kable_styling(font_size = 6)
+  
+```
+
+## Marital Status
+Similarly, for marital status:
+```{r}
+# -- explore proportion of missing cases by marital status
+maritalProp <- xtabs(  ~ to.impute.tab$marital + to.impute.tab$missingFlag  )
+colnames( maritalProp ) <- c("Included","Excluded")
+
+  kable(maritalProp, "html") %>%
+    kable_styling("striped", full_width = F)
+  
+  kable(maritalProp, "latex", booktabs = TRUE) %>%
+    kable_styling(font_size = 6)
+```
+
+# Store Data for Reuse
+  
+```{r}
+  # -- the imputed baseline data 
+  save(MID, file = "../DerivedData/imputed_tabSurv.RData")
+
+cat("Execution time")
+Sys.time() - startTime
+```

@@ -1,0 +1,623 @@
+---
+title: "Inferential Analyses"
+author: "Dan W Joyce"
+date: "10th October 2018"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Setup
+Before executing this notebook, check `./DerivedData` for:
+
+  * `survivalData_tabulated.csv`
+
+Check that you're working directory is `./Code/`
+  
+```{r message = FALSE}
+rm( list = ls() )
+require(dplyr)
+require(knitr)
+require(kableExtra)
+require(reshape2)
+require(ggplot2)
+require(boot)
+require(parallel)
+require(mice)
+require(tibble)
+require(rms)
+options(knitr.kable.NA = '')
+tabSurv <- read.csv("../DerivedData/survivalData_tabulated.csv")
+startTime <- Sys.time()
+```
+
+
+```{r}
+# -- repeat setup of proportions / cases identified in flow chart
+# -- total participants retrieved / harvested from CATIE data
+  total.N      <- unique( tabSurv$ID )
+
+# -- those missing data which means could not prospectively evaluate for TRS (so status.TRS == NA )
+  missing.BL    <- tabSurv$ID[ which( is.na( tabSurv$status.TRS ) ) ]
+  missing.cases <- tabSurv[ which( is.na( tabSurv$status.TRS ) ), ]
+
+# -- keep a copy of the whole of tabSurv (before removing cases that could not be included)
+  tabSurv.bak <- tabSurv
+  
+# -- remove missing.BL cases from tabSurv so we can continue defining sub-groups
+  tabSurv <- tabSurv[ -which( tabSurv$ID %in% missing.BL ), ]
+
+# -- left to analyse
+  N.included   <- nrow( tabSurv )  # total participants that we can analyse
+  
+  # -- indices of patients who "trigger" the absolute thresholds at some point
+  AT.cases <- tabSurv[ which( !is.na( tabSurv$time.onset.TRS ) ), ]
+  # -- indices of patients who *never* trigger the absolute threshold
+  NeverAT.cases <- tabSurv[ which( is.na( tabSurv$time.onset.TRS ) ), ]
+
+
+# -- of those who trigger (AT.cases), those that went on to develop TRS by full criteria
+  TRS.cases     <- AT.cases[ which( AT.cases$status.TRS == 2), ] 
+  
+  # -- those in the AT group, but who were shown to be Not-TRS (for one of many reasons - see below)
+  NTR.cases     <- AT.cases[ which( AT.cases$status.TRS == 1), ] 
+  
+  
+  # -- Of those NTR cases, break down by :
+  #    a) those who were still symptomatic, but didn't have >= 2 adequate trials
+  #        - this group will be people "on the way" to TRS if they complete a second adequate Rx and show no response
+  
+  # -- those in the AT group, who remained symptomatic, but only had 1 adequate Rx
+  # -- so are effectively right censored by exiting trial
+  oneRx.cases <- AT.cases[ which( 
+                                        !is.na( AT.cases$time.onset.TRS ) &  
+                                        AT.cases$numAdeq == 1 &              # had one adeq Rx
+                                        AT.cases$status.sof == 1 &           # but SOF was above threshold
+                                        AT.cases$status.sx == 1              # and symptoms persisted at TRS threshold
+                                      ),
+                               ]
+  
+  # -- those in the AT group, who remained symptomatic, but only had ZERO adequate Rx
+  # -- so are effectively right censored by exiting trial
+  zeroRx.cases <- AT.cases[ which( 
+                                        !is.na( AT.cases$time.onset.TRS ) &  
+                                        AT.cases$numAdeq == 0 &              # had one adeq Rx
+                                        AT.cases$status.sof == 1 &           # but SOF was above threshold
+                                        AT.cases$status.sx == 1              # and symptoms persisted at TRS threshold
+                                      ),
+                               ]
+
+```
+
+# Analysis One : Incidence of TRS in Whole Sample
+
+## Methods
+In the included group of `r N.included` participants bootstrap resampling (with replacement) was used to obtain a non-parametric estimate of the IR and a 95% confidence interval using the bias-corrected and accelerated (BCa) method:
+
+> Davison, A. C., & Hinkley, D. V. (1997). Bootstrap methods and their application (Vol. 1). Cambridge university press.
+
+```{r cache = TRUE, message = FALSE, warning = FALSE}
+yrsFactor <- 100
+
+bootIR <- function(data, idx, mult) {
+  d            <- data[idx,] 
+  person.years <- sum( d$perYrs )
+  events       <- sum( d$eventFlag, na.rm = TRUE)
+  incid.rate   <- mult * ( events / person.years )
+  return( incid.rate )
+} 
+
+# -- Construct dataframe of TRS events and person years
+eventFlag <- ifelse( tabSurv$status.TRS == 2, 1, 0 )    # Developed TRS (1 = yes, 0 = no)
+
+# -- this calculation works as follows : if developed TRS, person-years free of TRS = time.TRSYrs
+#                                        if DID NOT develop TRS, person-years free of TRS = time.inTrialYrs
+perYrs    <- eventFlag * ifelse( is.na( tabSurv$time.TRSYrs ), 0, tabSurv$time.TRSYrs )  + (1-eventFlag) * tabSurv$time.inTrialYrs
+bs.allIncluded <- data.frame(  perYrs = perYrs,
+                               eventFlag = eventFlag )
+
+# -- bootstrap incidence rate for whole population
+if( Sys.info()[1] != "Linux" ) {
+  do.par <- "no"
+  no.cpu  <- 1
+} else {
+  # -- confident we can run in parallel on multicores
+  do.par <- "multicore"
+  no.cpu <- detectCores()
+}
+
+results.allIncluded <- boot( data=bs.allIncluded, statistic=bootIR,
+                        R=4999, mult = yrsFactor, parallel = do.par, ncpus=no.cpu )
+
+
+# get CIs 
+results.allIncluded.CI <- boot.ci(results.allIncluded, type = "bca", parallel = do.par, ncpus = no.cpu)
+
+IR.allIncluded             <- round( results.allIncluded.CI$t0, 2 )
+IR.allIncluded.CI.lower    <- round( results.allIncluded.CI$bca[4], 2 )
+IR.allIncluded.CI.upper    <- round( results.allIncluded.CI$bca[5], 2 )
+
+```
+
+
+## Results
+In the overall population of `r N.included` participants, there were `r nrow(TRS.cases)` TRS cases (i.e. those meeting full TRRIP criteria).  The crude incidence rate was `r IR.allIncluded` per `r yrsFactor` person-years, with a 95% confidence interval [`r IR.allIncluded.CI.lower`, `r IR.allIncluded.CI.upper`].  
+
+# Analysis Two : Incidence of TRS in AT Subgroup
+## Methods
+The population of `r N.included` divides into:
+  
+  * `r nrow( NeverAT.cases )` that where never above threshold for the TRRIP absolute criteria (NAT)
+  * `r nrow( AT.cases )` that at some point in the trial reached the absolute threshold TRRIP criteria (AT)
+
+The NAT group can never develop TRS because they never met the absolute criteria at any time in the trial. The AT group represent a clinically interesting sub-population where a participant 'triggered' the absolute criteria, but may or may not reach the clinical change criteria.  For this reason, we provide a separate estimate of the incidence rate in this sub-population using the same bootstrap method.
+
+```{r cache = TRUE, message = FALSE, warning = FALSE}
+# -- Construct dataframe of TRS events and person years in the AT group
+eventFlag <- ifelse( AT.cases$status.TRS == 2, 1, 0 )    # Developed TRS (1 = yes, 0 = no)
+perYrs    <- eventFlag * ifelse( is.na( AT.cases$time.TRSYrs ), 0, AT.cases$time.TRSYrs )  + (1-eventFlag) * AT.cases$time.inTrialYrs
+bs.AT     <- data.frame(  perYrs = perYrs,
+                          eventFlag = eventFlag )
+
+results.AT <- boot( data=bs.AT, statistic=bootIR,
+                        R=4999, mult = yrsFactor, parallel = do.par, ncpus=no.cpu )
+
+# get CIs 
+results.AT.CI <- boot.ci(results.AT, type = "bca", parallel = do.par, ncpus = no.cpu)
+
+IR.AT             <- round( results.AT.CI$t0, 2 )
+IR.AT.CI.lower    <- round( results.AT.CI$bca[4], 2 )
+IR.AT.CI.upper    <- round( results.AT.CI$bca[5], 2 )
+```
+
+## Results
+In the sub-population of `r nrow(AT.cases)` participants who reached absolute criteria threshold (AT), there were `r nrow(TRS.cases)` TRS cases (i.e. those who went on to meet the full TRRIP criteria).  The crude incidence rate was `r IR.AT` per `r yrsFactor` person-years, with a 95% confidence interval [`r IR.AT.CI.lower`, `r IR.AT.CI.upper`].  
+
+
+# Analysis of TRS Domains
+
+## Results
+
+```{r}
+domains <- as.matrix( xtabs( ~ TRS.pos + TRS.neg, data = tabSurv[ which( tabSurv$status.TRS == 2), ] ) )
+```
+
+  * Participants with TRS in negative domain only = `r domains[1,2]`
+  * Participants with TRS in positive domain only = `r domains[2,1]`
+  * Participants with TRS in both domains = `r domains[2,2]`
+
+# Analysis Three : Associations with TRS Status
+
+## Methods
+
+With the available baseline data as described in:
+
+> Lieberman, J. A. (2005). Clinical Antipsychotic Trials of Intervention Effectiveness (CATIE) Investigators; Effectiveness of antipsychotic drugs in patients with chronic schizophrenia. N Engl J Med, 353, 1209-1223.
+
+we group into the following and produce four models (Models 1 to 4 in the paper)
+
+  1. **Demographics** : age, sex, race, years of education, marital status, employment status
+  2. **Psychiatric history and comorbidity** : exacerbation in past 3 months, years since frist treatment (for behavioural/emotional problems and with antipsychotic medication), SCID diagnoses in past 5 years (Depression, alcohol and substance use/dependence, OCD and anxiety)
+  3. **Antipsychotic Medication** (on entering the trial) : with olanzapine, quetiapine, risperidon, ziprasidone, haloperidol, decanoate/depot, perphernazine or other medication, not included in CATIE trial
+  4. **Psychopathology** at baseline : PANSS scores (in positive, negative and general domains), CGI severity
+
+We then build logistic regression for Models 1--4 in both the whole sample, N = `r nrow(tabSurv)` and repeat the model building in the N = `r nrow( AT.cases )` AT subgroup.  This is because the AT group represent a group of participants who are -- by definition of TRRIP criteria -- more likely or at-risk to develop TRS than the overall population.
+
+## Results
+
+The following tables are aggregated and formatted into Table 3 of the paper.
+
+Before presenting the results, we attach the 20 imputed data sets, and define a function to wrap the GLM analyses:
+
+```{r}
+# -- reload MID, the imputed data baseline data (1440 participants, that has the EXCLUDED group as well as INCLUDED)
+attach("../DerivedData/imputed_tabSurv.RData")
+
+# -- for analyses on the original (un-imputed) data, add a categorical variable for TRS as 0/1
+tabSurv$final.TRS <- ifelse( tabSurv$status.TRS == 2, 1, 0 )
+
+# -- define independent variables for each analysis
+demo.X      <- c("age", "sex", "yrsEduc", "race", "marital", "employFT")
+psychpath.X <- c("P", "N", "G", "CGIsev") 
+psychHx.X    <- c("exac3mo","yrsFirstTx", "yrsFrstAntiPsyRx", "Depression", "alcDep_5yrs", "alcAbuse_5yrs", 
+                 "drugDep_5yrs", "drugAbuse_5yrs", "OCD_5yrs", "anxDis_5yrs")
+rx.X        <- c("olzB0", "quetB0", "rispB0", "zipB0", "halB0", "decaB0", "perB0", "otherB0")
+mhx.X       <- c("COPD", "DM", "HepABC", "Lipid", "HTN", "IHD", "OsteoArth", "Osteopor", "STI")
+
+
+runGLM <- function( incX, imputedData, AT.only = FALSE ) {
+  # -- function to run analyses on 0/1 TRS outcome
+  formStr <- paste("final.TRS", paste( incX, collapse=" + "), sep=" ~ ")
+  
+  if ( AT.only == TRUE ) {
+      fitGLM  <- with( imputedData, glm( formula( formStr ), family=binomial(link = 'logit'), subset = (group.AT == 1) ) ) 
+  } else {
+      fitGLM  <- with( imputedData, glm( formula( formStr ), family=binomial(link = 'logit') ) ) 
+  }
+  
+  poolGLM <- round( data.frame( summary( pool( fitGLM ), conf.int = TRUE ) ), 3 )
+  poolGLM$sig.flag <- ifelse( poolGLM$p.value < 0.05, "*", "" )
+  
+  # tidy dataframe up
+  ret.df <- data.frame( Variable = rownames( poolGLM ),
+                        Beta = poolGLM$estimate,
+                        'SE' = poolGLM$std.error,
+                        "z-value" = poolGLM$statistic,
+                        'P-value' = poolGLM$p.value,
+                        Sig = poolGLM$sig.flag,
+                        OR = round( exp( poolGLM$estimate ), 3),
+                        'CI' = paste0( "[", round( exp( poolGLM$X2.5.. ), 3 ), ", ", round( exp( poolGLM$X97.5.. ), 3 ), "]" ) )
+  
+  return( ret.df )
+}
+
+```
+
+## Associations with TRS
+
+For each analysis, the GLM (logistic regression) is run over the 20 imputed data sets and then pooled.
+
+### Demographics : Whole Sample (N = `r nrow( tabSurv )`)
+
+```{r warning = FALSE}
+# -- demographics
+demoTab <- runGLM( demo.X, MID, AT.only = FALSE )
+
+    temp.p <- paste( demoTab[,"P.value"], demoTab[,"Sig"])
+    
+    ltxTab       <- demoTab[ , -which( colnames(demoTab) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Age","Sex","Years Education","Race (Other)",
+                         "Race (White)","Never Married","Prev. Married","Employed")
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8) 
+
+```
+
+### Demographics : Above Threshold Subgroup (N = `r nrow( AT.cases )`)
+
+```{r}
+# -- demographics
+demoTab <- runGLM( demo.X, MID, AT.only = TRUE )
+
+    temp.p <- paste( demoTab[,"P.value"], demoTab[,"Sig"])
+    
+    ltxTab       <- demoTab[ , -which( colnames(demoTab) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Age","Sex","Years Education","Race (Other)",
+                         "Race (White)","Never Married","Prev. Married","Employed")
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8) 
+
+```
+
+### Psychiatric History : Whole Sample (N = `r nrow( tabSurv )`)
+
+```{r warning = FALSE}
+# -- psychiatric history
+psyHx <- runGLM( psychHx.X, MID, AT.only = FALSE )
+
+    temp.p <- paste( psyHx[,"P.value"], psyHx[,"Sig"])
+    
+    ltxTab       <- psyHx[ , -which( colnames(psyHx) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Exacerbation (past 3 months)","Years 1st Treatment (Emotional/Behavioural)",
+                         "Years 1st Treatment (Antipsychotic)", "Depression","Alcohol Depend.",
+                         "Alcohol Abuse", "Drug Depend.", "Drug Abuse",
+                         "OCD", "Other Anxiety Disorder")
+    
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8, latex_options = "scale_down")
+
+```
+
+### Psychiatric History : Above Threshold Subgroup (N = `r nrow( AT.cases )`)
+```{r warning = FALSE}
+# -- psychiatric history
+psyHx <- runGLM( psychHx.X, MID, AT.only = TRUE )
+
+
+    temp.p <- paste( psyHx[,"P.value"], psyHx[,"Sig"])
+    
+    ltxTab       <- psyHx[ , -which( colnames(psyHx) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Exacerbation (past 3 months)","Years 1st Treatment (Emotional/Behavioural)",
+                         "Years 1st Treatment (Antipsychotic)", "Depression","Alcohol Depend.",
+                         "Alcohol Abuse", "Drug Depend.", "Drug Abuse",
+                         "OCD", "Other Anxiety Disorder")
+    
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+       kable_styling(font_size = 8, latex_options = "scale_down")
+
+```
+
+### Antipsychotic Treatment at Baseline : Whole Sample (N = `r nrow( tabSurv )`)
+
+```{r warning = FALSE}
+# -- treatment at baseline 
+# -- small numbers in the decaB0 group provide poor model fitting
+b0Tx <- runGLM( rx.X[ -which( rx.X == "decaB0" ) ], MID, AT.only = FALSE  )
+
+  temp.p <- paste( b0Tx[,"P.value"], b0Tx[,"Sig"])
+    
+    ltxTab       <- b0Tx[ , -which( colnames(b0Tx) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Olanzapine","Quetiapine", "Risperidone",
+                         "Ziprasidone","Haloperidol","Perphenazine","Other")
+    
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8) 
+
+```
+
+### Antipsychotic Treatment at Baseline : Above Threshold Subgroup (N = `r nrow( AT.cases )`)
+
+```{r warning = FALSE}
+# -- treatment at baseline 
+# -- small numbers in the decaB0 group provide poor model fitting
+b0Tx <- runGLM( rx.X[ -which( rx.X == "decaB0" ) ], MID, AT.only = TRUE )
+
+temp.p <- paste( b0Tx[,"P.value"], b0Tx[,"Sig"])
+    
+    ltxTab       <- b0Tx[ , -which( colnames(b0Tx) %in% c("P.value","Sig") ) ]
+    ltxTab$P.val <- temp.p
+    
+    ltxTab$Variable <- c("Intercept","Olanzapine","Quetiapine", "Risperidone",
+                         "Ziprasidone","Haloperidol","Perphenazine","Other")
+    
+    
+    colnames( ltxTab ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+    
+    kable(ltxTab, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8) 
+
+```
+
+Post-hoc test : does crude, overall level of polypharmacy (sum of baseline medications) affect TRS ?
+```{r}
+polyrx.fit <- glm( tabSurv$final.TRS ~ rowSums( tabSurv[ , rx.X ] ), family = binomial(link = "logit") )
+summary( polyrx.fit )
+```
+
+And in the AT group : 
+
+```{r}
+AT.cases$final.TRS <- ifelse( AT.cases$status.TRS == 2, 1, 0 )
+polyrx.fit <- glm( AT.cases$final.TRS ~ rowSums( AT.cases[ , rx.X ] ), family = binomial(link = "logit") )
+summary( polyrx.fit )
+```
+
+In both the whole population, and the AT group, polypharmacy at baseline is not associated with TRS status. 
+
+### Psychopathology at Baseline : Whole Sample (N = `r nrow( tabSurv )`)
+```{r warning = FALSE}
+# -- psychopathology at baseline 
+(psychopath.unadj.all <- runGLM( psychpath.X, MID, AT.only = FALSE ) )
+```
+
+As there are associations with TRS, we adjust for demographics : 
+
+```{r warning = FALSE}
+# -- demographi adjusted psychopathology at baseline 
+( psychopath.adj.all <- runGLM( c( psychpath.X, demo.X ) , MID, AT.only = FALSE ) )
+```
+
+```{r}
+# - format P-val column for adjusted analysis
+  temp.p <- paste( psychopath.adj.all[,"P.value"], psychopath.adj.all[,"Sig"])
+  psychopath.adj.all <- psychopath.adj.all[ , -which( colnames(psychopath.adj.all) %in% c("P.value","Sig") ) ]
+  psychopath.adj.all$P.val <- temp.p
+
+# - and for the unadjust analysis 
+  temp.p <- paste( psychopath.unadj.all[,"P.value"], psychopath.unadj.all[,"Sig"])
+  psychopath.unadj.all <- psychopath.unadj.all[ , -which( colnames(psychopath.unadj.all) %in% c("P.value","Sig") ) ]
+  psychopath.unadj.all$P.val <- temp.p
+  
+# - combine unadj with adjusted
+  psychopath.all.tbl <- left_join( psychopath.adj.all, psychopath.unadj.all, by = "Variable")
+  psychopath.all.tbl$Variable <- c("Intercept", "PANSS (P)", "PANSS (N)", "PANSS (G)",
+                                 "CGI (Severity)", "Age", "Sex", "Education (Yrs)", 
+                                 "Race (Other)", "Race (White)", "Married (Never)",
+                                 "Married (Previous)","Employed (FT)")
+
+  colnames( psychopath.all.tbl ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p",
+                                      "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+  kable(psychopath.all.tbl, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8, latex_options = "scale_down") %>%
+      add_header_above(c(" " = 1, "Adjusted" = 6, "Unadjusted" = 6 ) )
+
+```
+
+
+Adjustment makes little difference, but CGIsev is not longer associated; this is unsurprising because the clinician-rated CGI severity rating will be collinear with the variables that measure social and occupational functioning, notably employment and marital status. 
+
+
+### Psychopathology at Baseline : Above Threshold (AT) Subgroup (N = `r nrow( AT.cases )`)
+```{r warning = FALSE}
+# -- psychopathology at baseline 
+( psychopath.unadj.AT <- runGLM( psychpath.X, MID, AT.only = TRUE ) )
+```
+
+We adjust for demographics : 
+
+```{r warning = FALSE}
+# -- demographics adjusted psychopathology at baseline 
+(psychopath.adj.AT <- runGLM( c( psychpath.X, demo.X ) , MID, AT.only = TRUE ) )
+```
+
+
+```{r}
+# - format P-val column for adjusted analysis
+  temp.p <- paste( psychopath.adj.AT[,"P.value"], psychopath.adj.AT[,"Sig"])
+  psychopath.adj.AT <- psychopath.adj.AT[ , -which( colnames(psychopath.adj.AT) %in% c("P.value","Sig") ) ]
+  psychopath.adj.AT$P.val <- temp.p
+
+# - and for the unadjust analysis 
+  temp.p <- paste( psychopath.unadj.AT[,"P.value"], psychopath.unadj.AT[,"Sig"])
+  psychopath.unadj.AT <- psychopath.unadj.AT[ , -which( colnames(psychopath.unadj.AT) %in% c("P.value","Sig") ) ]
+  psychopath.unadj.AT$P.val <- temp.p
+  
+# - combine unadj with adjusted
+  psychopath.AT.tbl <- left_join( psychopath.adj.AT, psychopath.unadj.AT, by = "Variable")
+  psychopath.AT.tbl$Variable <- c("Intercept", "PANSS (P)", "PANSS (N)", "PANSS (G)",
+                                 "CGI (Severity)", "Age", "Sex", "Education (Yrs)", 
+                                 "Race (Other)", "Race (White)", "Married (Never)",
+                                 "Married (Previous)","Employed (FT)")
+
+  colnames( psychopath.AT.tbl ) <- c(" ", "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p",
+                                      "Beta", "Std.Err.", "Z","Odds Ratio", "95% CI", "p") 
+  
+  kable(psychopath.AT.tbl, "html", booktabs = TRUE) %>%
+      kable_styling(font_size = 8, latex_options = "scale_down") %>%
+      add_header_above(c(" " = 1, "Adjusted" = 6, "Unadjusted" = 6 ) )
+```
+
+
+Some observations:
+
+  * In an adjusted analysis of the whole population, P, N and G are associated with TRS status
+  * In the sub-population of participants who 'trigger' the TRRIP absolute threshold (the AT group) only N and G are associated, but age is also.
+
+However, we note that `r length( which( tabSurv$time.onset.TRS[ which( tabSurv$status.TRS == 2 ) ] == 1 ) )` of `r length( which( tabSurv$status.TRS == 2 ) )` TRS participants met the absolute critieria *at baseline* suggesting these associations have limited value in prediction. 
+
+# Internal Validation for Psychopathology
+
+Null-hypothesis significance testing (i.e. for model coefficients being different from zero) suggests that psychopathology is associated with prospective TRS status.  As we do not have a truly independent sample (for external validation) to test the model, we compromise on internal validation and report an index of discrimination (Somers' $D_{xy}$) and non-parametric calibration curves (see Harrell, RMS book, Chapter 5.1.2 and 5.3).
+
+We used 500 bootstraps (with replacement) from the original data (containing `r nrow( tabSurv )` participants), tolerating the loss of 6 participants who are missing one of the PANSS domains (positive, negative, general) or CGI severity score.  None of the TRS patients had any of these data missing.  
+
+See:
+
+> Harrell, F. E., Lee, K. L., & Mark, D. B. (1996). Multivariable prognostic models: issues in developing models, evaluating assumptions and adequacy, and measuring and reducing errors. Statistics in medicine, 15(4), 361-387.
+
+and:
+
+> Harrell, F. E. (2015). Regression Modeling Strategies, 2nd Edition, Springer. Chapters 5 and 10
+
+> Austin, P. C., & Steyerberg, E. W. (2014). Graphical assessment of internal and external calibration of logistic regression models by using loess smoothers. Statistics in medicine, 33(3), 517-535.
+
+
+The model evaluated combines the variables from the whole and AT subgroup - i.e. age, CGI severity, P, N, and G.
+
+
+```{r}
+# -- internal validation and calibration of the psychopathology variables (as a more robust performance measure than model fit)
+incX <- c("age", "P", "N", "G", "CGIsev")
+formStr <- paste("final.TRS", paste( incX, collapse=" + "), sep=" ~ ")
+
+# -- set data distribution options -- see rms package
+ddd <- datadist( tabSurv )
+options( datadist = "ddd")
+  
+this.fit.whole <- lrm( formula( formStr ), data = tabSurv, x = TRUE, y = TRUE )
+this.fit.AT    <- lrm( formula( formStr ), data = AT.cases, x = TRUE, y = TRUE )
+```
+
+First, we can see the predicted probabilities as a function of each variable (P, N, G and CGIsev):
+```{r}
+plot(Predict(this.fit.whole, fun=plogis), main = "Whole Sample") # predicted values
+```
+
+```{r}
+plot(Predict(this.fit.AT, fun=plogis), main = "AT Subgroup") # predicted values
+```
+
+Notably, the uncertainty on the predicted probability of being TRS grows substantially for more extreme values of the variables  P, N, G and CGIsev.  
+
+We can examine the bootstrap resampling logistic calibration statistics, for the whole population:
+
+```{r}
+# -- validation by logistic calibration 
+this.valid.whole <- rms::validate(this.fit.whole, method="boot", B=500) # bootstrapped validation
+(this.valid.whole)
+```
+
+And for the AT sub-population
+
+```{r}
+# -- validation by logistic calibration 
+this.valid.AT <- rms::validate(this.fit.AT, method="boot", B=500) # bootstrapped validation
+(this.valid.AT)
+```
+
+The Somers' measure (Dxy) representing the model's likely future predictive discrimination is poor, as are the unreliability index (U) and discrimination index (D).  
+
+Finally, a bootstrapped non-parametric bias-corrected calibration curve for the whole sample:
+
+```{r}
+# -- calibration curve
+this.calib.whole <- rms::calibrate(this.fit.whole, 
+                           method="boot", B=500, bw = FALSE,
+                           smoother = "lowess",
+                           digits = NULL,
+                           scat1d = FALSE) # model calibration
+
+```
+
+And for the AT subgroup:
+
+```{r}
+# -- calibration curve
+this.calib.AT <- rms::calibrate(this.fit.AT, 
+                           method="boot", B=500, bw = FALSE,
+                           smoother = "lowess",
+                           digits = NULL,
+                           scat1d = FALSE) # model calibration
+
+```
+
+Display the calibration plots:
+
+```{r}
+
+plot(this.calib.whole, main = "Whole Sample", xlab = "Predicted Probability of TRS", ylab = "Actual Probability", 
+          subtitles = FALSE, legend = TRUE )
+
+plot(this.calib.AT, main = "AT Subgroup", xlab = "Predicted Probability of TRS", ylab = "Actual Probability", 
+          subtitles = FALSE, legend = TRUE )
+  
+  png( filename = "../DerivedData/calib_PANSS_Whole.png", width = 600, height = 600, units = "px", pointsize = 16 )
+  plot(this.calib.whole, main = "Whole Sample", xlab = "Predicted Probability of TRS", ylab = "Actual Probability",
+          subtitles = FALSE, legend = TRUE )
+  dev.off()
+
+  png( filename = "../DerivedData/calib_PANSS_AT.png", width = 600, height = 600, units = "px", pointsize = 16 )
+  plot(this.calib.AT, main = "AT Subgroup", xlab = "Predicted Probability of TRS", ylab = "Actual Probability", 
+           subtitles = FALSE, legend = TRUE )  
+   dev.off()
+
+```
+
+The calibration plots shows systematic deviation of the predicted and actual probabilites for TRS status based on baseline psychopathology (adjusted for age), and we conclude that these are poorly predictive of future TRS status.
+
+```{r}
+cat("Execution time")
+Sys.time() - startTime

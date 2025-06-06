@@ -1,0 +1,96 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta http-equiv="Content-Style-Type" content="text/css" />
+  <meta name="generator" content="pandoc" />
+  <title></title>
+  <style type="text/css">code{white-space: pre;}</style>
+</head>
+<body>
+<h1 id="catie-trs---terminology-and-data-dictionary">CATIE TRS - Terminology and Data Dictionary</h1>
+<h2 id="abbreviations-used">Abbreviations Used</h2>
+<p>Throughout, we refer to the following :</p>
+<ul>
+<li>SOF - social and occupational functioning data</li>
+<li>Sx - symptom data (PANSS)</li>
+<li>Rx - treatments</li>
+</ul>
+<p>We often refer to the <strong>absolute</strong> criteria for Sx (and SOF) -- this means that the threshold specified in TRRIP has been met for Sx or SOF at some time point. Note, that this is <em>different</em> to the change / persistence criteria for Sx (i.e. the &lt;20% reduction). If a participant meets the absolute criteria, and then meets the persistence of symptoms / SOF criteria, they are designated TRS.</p>
+<h2 id="assumptions">Assumptions</h2>
+<p>The way the data are collected in CATIE means that while Sx and Rx data are recorded frequently, the SOF data was recorded only on less-frequent designated intervals throughout the study. For this reason, we used last observation carried forward (LOCF) when the SOF data was not aligned with the time point at which TRS status was assessed.</p>
+<h2 id="sub-samples-groups">Sub-Samples / Groups</h2>
+<p>Recall that the TRRIP criteria specifies an <strong>absolute</strong> and <strong>change</strong> criteria for symptoms - most importantly, the absolute criteria for symptoms specifies a threshold for positive and negative symptom domains. Then, TRRIP specifies that after <strong>two adequate trials</strong> a participant is treatment resistant if and only if:</p>
+<ol style="list-style-type: decimal">
+<li>The absolute criteria must still be met for positive, negative or both domains</li>
+<li>And the change / response to treatments must be &lt;20% in the overall PANSS score, as well as either the positive, negative (or both) domains.</li>
+</ol>
+<p>So, if a participant enters the CATIE trial and progresses through and then exits the trial and:</p>
+<ol style="list-style-type: decimal">
+<li><strong>never</strong> meets the <strong>absolute threshold</strong> criteria, then we designate them <strong>&quot;Never Above Threshold&quot;</strong> (NAT) because by definition, the participant's change in symptoms / response to treatment is not relevant (i.e. a participant can never be treatment resistant because they must meet the absolute <em>and</em> change criteria together)</li>
+<li><strong>at some time point</strong> meets the <strong>absolute threshold</strong> criteria, then we designate them <strong>&quot;Above Threshold&quot;</strong> (AT), because now, we want to follow this participant and establish how their symptoms respond to two (or more) adequate treatments.</li>
+</ol>
+<p>A participant in the &quot;Above Threshold&quot; (AT) group can then exit the trial having had:</p>
+<ol style="list-style-type: decimal">
+<li>two or more adequate treatments but <strong>not displaying response</strong> by the TRRIP criteria, and are designated <strong>TRS</strong></li>
+<li>two or more adequate treatments but <strong>respond</strong> according to the the TRRIP criteria, and are designated <strong>Responders</strong></li>
+<li><strong>only one</strong> adequate treatments, but <strong>not displaying</strong> response by the TRRIP criteria, and are <strong>right censored</strong>, remaining above threshold, and continuing at risk of TRS (e.g. had they been followed up for a further adequate trial)</li>
+<li><strong>zero</strong> adequate treatments, but <strong>not displaying</strong> response by the TRRIP criteria, and are <strong>right censored</strong>, remaining above threshold, and at continuing risk of TRS (e.g. had they been followed up for a further two adequate trials)</li>
+</ol>
+<h1 id="data-dictionary">Data Dictionary</h1>
+<p>The data relevant to analyses are contained in <code>./DerivedData/survivalData_tabulated.csv</code>. The <code>data.frame</code> <code>tabSurv</code> data dictionary is a little complex, so the details are:</p>
+<p><strong>Identifiers</strong>:</p>
+<ul>
+<li><code>ID</code> - Participant ID number</li>
+</ul>
+<p><strong>Timing</strong>:</p>
+<ul>
+<li><code>time.inTrial</code> - Total time in the trial -- this will be the contributed person years for this participant (whether they develop TRS or not)</li>
+<li><p><code>time.inTrialYrs</code> = time.inTrial / 365 (in years)</p></li>
+<li><p>Time of &quot;onset&quot; of <strong>individual criteria</strong> including if a participant <em>ever</em> meets individual criteria</p>
+<ul>
+<li>If <code>NA</code> the participant <em>never</em> met Sx, SOF or Rx criteria (where Sx = symptoms on PANSS, SOF = social occupational function and Rx = treatments)</li>
+<li><p>Otherwise, time they met criteria at the time specified in days</p></li>
+<li><code>onset.Sx</code> : the day absolute symptoms triggered above threshold (this does <strong>not</strong> mean the <strong>change</strong> in symptoms meets TRS criteria &lt; 20%)</li>
+<li><code>onset.SOF</code> : the day SOF triggered above threshold</li>
+<li><p><code>onset.Rx</code> : the day adequate trials triggered threshold of <span class="math inline">≥2</span></p></li>
+</ul></li>
+<li>Timing of &quot;onsets&quot; for <strong>all three TRS criteria</strong>
+<ul>
+<li>If <code>NA</code> the participant <em>never</em> met the criteria, otherwise, times are in days</li>
+<li><code>time.onset.TRS</code> : the time at which Sx <strong>and</strong> SOF triggered above threshold, denoting the baseline for which PANSS is assessed</li>
+<li><code>time.onset.TRSYrs</code> is <code>time.onset.TRS</code> in years</li>
+<li><code>time.TRS</code> : the time <strong>confirmed</strong> TRS (if at all) = some day after <code>time.onset.TRS</code> and adequate treatment condition met. For a TRS participant, this is the person contributed 'disease free' time for incidence rate analyses.</li>
+<li>Note, at the time <code>onset.Rx</code> (i.e. when adequate treatments <span class="math inline">≥2</span>), we then check the corresponding Sx and SOF for response, and if not responding (by the criteria in TRRIP) we label this as the time TRS event happens</li>
+<li><code>time.TRSYrs</code> = <code>time.TRS</code> in years</li>
+</ul></li>
+</ul>
+<p><strong>Summary of treatments</strong>:</p>
+<ul>
+<li><code>numAdeq</code> : the number of adequate trials (by TRRIP criteria on dose, duration, concordance)</li>
+<li><code>durAdeq</code> : the total duration of adequate trials</li>
+<li><code>totalRx</code> : total number of drug treatments, whether meeting 'adequate' criteria or not</li>
+<li>Note, if any are <code>NA</code> then this data is missing / could not be established from public CATIE datasets</li>
+</ul>
+<p><strong>Summary of &quot;Caseness&quot;</strong>: (independent of time)</p>
+<ul>
+<li><code>status.rx</code> : the participant did at some point meet TRS criteria for adequate treatments</li>
+<li><code>status.sx</code> : the participant did meet TRS criteria for symptoms <strong>not changing</strong> in response to adequate treatment</li>
+<li><code>status.sof</code> : the participant did at some point meet TRS criteria for SOF</li>
+<li>All above are <code>0/1</code>, with <code>1</code> meaning positive, <code>0</code> negative</li>
+<li><code>status.TRS</code> : overall, flag for TRS caseness where <code>1</code> = censored (did not convert) <code>2</code> = converted to TRS</li>
+</ul>
+<p><strong>TRS domains</strong>: (Only for those participants reaching full TRS criteria with <code>status.TRS = 2</code>)</p>
+<ul>
+<li><code>TRS.pos</code> : treatment resistance in the positive domain (0/1; 1 = TRUE, 0 = FALSE)</li>
+<li><code>TRS.neg</code> : treatment resistance in the negative domain (0/1; 1 = TRUE, 0 = FALSE)</li>
+</ul>
+<p><strong>Missing Data Flags</strong>: (missing enough data that follow-up / TRS assessment cannot be performed)</p>
+<ul>
+<li><code>missing.Sx</code> : not enough records for symptom trajectory</li>
+<li><code>missing.Rx</code> : not enough records for treatments trajectory</li>
+<li><code>missing.SOF</code> : not enough records for SOF trajectory</li>
+<li>Coded as 1 (missing) or 0 otherwise.</li>
+</ul>
+</body>
+</html>
